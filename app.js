@@ -20,14 +20,36 @@ let appState = {
 };
 
 function getRouteContext() {
+  const url = new URL(window.location.href);
+  const viewParam = normalizeValue(url.searchParams.get("view")).toLowerCase();
+  const branchParam = normalizeValue(url.searchParams.get("branchId"));
   const path = window.location.pathname.replace(/\/+$/, "") || "/";
   const segments = path.split("/").filter(Boolean);
+
+  if (viewParam === "bde") {
+    return {
+      mode: "bde",
+      branchId: null,
+      path,
+      source: "query"
+    };
+  }
+
+  if (viewParam === "agency" && branchParam) {
+    return {
+      mode: "agency",
+      branchId: branchParam,
+      path,
+      source: "query"
+    };
+  }
 
   if (segments.length === 1 && segments[0].toLowerCase() === "bde") {
     return {
       mode: "bde",
       branchId: null,
-      path
+      path,
+      source: "path"
     };
   }
 
@@ -39,14 +61,16 @@ function getRouteContext() {
     return {
       mode: "agency",
       branchId: decodeURIComponent(segments[1]).trim(),
-      path
+      path,
+      source: "path"
     };
   }
 
   return {
     mode: "unknown",
     branchId: null,
-    path
+    path,
+    source: "none"
   };
 }
 
@@ -369,9 +393,9 @@ function renderUnknownRoute() {
   app.innerHTML = `
     <div class="portal-placeholder">
       <h2>Route not recognized</h2>
-      <p>Use <code>/bde</code> or <code>/agency/[branchId]</code>.</p>
+      <p>Use static-safe URLs like <code>/?view=bde</code> or <code>/?view=agency&amp;branchId=A07667</code>.</p>
+      <p>Path route support is also kept for later: <code>/bde</code> and <code>/agency/[branchId]</code>.</p>
       <p>Current path: <strong>${escapeHtml(appState.route.path)}</strong></p>
-      <p>Static fallback option later: <code>/?view=bde</code> or <code>/?view=agency&amp;branchId=A07667</code></p>
     </div>
   `;
 }
@@ -397,6 +421,7 @@ function renderBdePlaceholder() {
   app.innerHTML = `
     <div class="portal-placeholder">
       <h2>BDE Portal</h2>
+      <p>Route mode: <strong>${escapeHtml(appState.route.source)}</strong></p>
       <p>CSV loaded successfully.</p>
       <p>Normalized rows: <strong>${appState.rows.length}</strong></p>
       <p>Agencies found: <strong>${appState.branches.length}</strong></p>
@@ -419,7 +444,8 @@ function renderAgencyPlaceholder() {
   app.innerHTML = `
     <div class="portal-placeholder">
       <h2>Agency Portal</h2>
-      <p>Branch ID from URL: <strong>${escapeHtml(branchId || "")}</strong></p>
+      <p>Route mode: <strong>${escapeHtml(appState.route.source)}</strong></p>
+      <p>Branch ID: <strong>${escapeHtml(branchId || "")}</strong></p>
       <p>Matching normalized rows: <strong>${matchingRows.length}</strong></p>
       <p>Latest full week: <strong>${escapeHtml(metrics ? metrics.latestFullWeekLabel : "N/A")}</strong></p>
       <p>Current top corridor in that week: <strong>${escapeHtml(topCorridor)}</strong></p>
@@ -433,6 +459,7 @@ function renderInitialState() {
     app.innerHTML = `
       <div class="portal-placeholder">
         <h2>BDE Portal</h2>
+        <p>Open with <code>/?view=bde</code> for the static-safe MVP route.</p>
         <p>Paste a CSV and click Load CSV.</p>
       </div>
     `;
@@ -443,7 +470,8 @@ function renderInitialState() {
     app.innerHTML = `
       <div class="portal-placeholder">
         <h2>Agency Portal</h2>
-        <p>Branch ID from URL: <strong>${escapeHtml(appState.route.branchId || "")}</strong></p>
+        <p>Open with <code>/?view=agency&amp;branchId=${escapeHtml(appState.route.branchId || "A07667")}</code> for the static-safe MVP route.</p>
+        <p>Branch ID: <strong>${escapeHtml(appState.route.branchId || "")}</strong></p>
         <p>Paste a CSV and click Load CSV.</p>
       </div>
     `;
@@ -488,6 +516,7 @@ function handleLoadCsv() {
     appState.rows = normalized.normalizedRows;
     appState.branches = branches;
     appState.branchMetrics = branchMetrics;
+    appState.route = getRouteContext();
 
     const invalidRowNote = normalized.invalidRows.length
       ? ` Skipped ${normalized.invalidRows.length} invalid row(s).`
