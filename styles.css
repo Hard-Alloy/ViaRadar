@@ -221,3 +221,26 @@ body {
     min-height: 240px;
   }
 }
+.portal-placeholder h2 {
+  margin: 0 0 10px 0;
+  font-family: "Playfair Display";
+  font-size: 28px;
+  line-height: 1.15;
+  color: var(--via-blue);
+}
+
+.portal-placeholder p {
+  margin: 0 0 10px 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text-mid);
+}
+
+.portal-placeholder code {
+  font-family: "Proxima Nova";
+  background: #eef4f9;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 2px 8px;
+  color: var(--via-blue);
+}
