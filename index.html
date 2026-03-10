@@ -24,31 +24,17 @@
   <main class="page">
     <section class="page-intro">
       <p class="intro-text">
-        Paste the latest transaction CSV to power the Agency and BDE mock portals.
+        ViaRadar reads repo-based transaction data and surfaces the next best action for each agency.
       </p>
       <p class="route-hint">
-        Intended routes:
-        <code>/agency/[branchId]</code>
+        Static-safe routes:
+        <code>/?view=agency&amp;branchId=A07667</code>
         and
-        <code>/bde</code>
+        <code>/?view=bde</code>
       </p>
     </section>
 
-    <section class="csv-panel">
-      <label for="csvInput" class="panel-label">Paste CSV</label>
-      <textarea
-        id="csvInput"
-        class="csv-input"
-        placeholder="Paste CSV data here..."
-        spellcheck="false"
-      ></textarea>
-
-      <div class="panel-actions">
-        <button id="loadCsvBtn" class="primary-button" type="button">
-          Load CSV
-        </button>
-      </div>
-
+    <section class="status-panel">
       <div id="csvStatus" class="csv-status" aria-live="polite"></div>
     </section>
 
