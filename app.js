@@ -15,6 +15,7 @@ let appState = {
   rows: [],
   headers: [],
   branches: [],
+  branchMetrics: {},
   route: getRouteContext()
 };
 
@@ -212,6 +213,153 @@ function extractBranches(rows) {
   ).sort((a, b) => a.localeCompare(b));
 }
 
+function getStartOfWeek(date) {
+  const normalized = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const day = normalized.getDay();
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+  normalized.setDate(normalized.getDate() + diffToMonday);
+  return normalized;
+}
+
+function addDays(date, days) {
+  const next = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function addWeeks(date, weeks) {
+  return addDays(date, weeks * 7);
+}
+
+function getWeekKey(date) {
+  return formatDateKey(getStartOfWeek(date));
+}
+
+function formatWeekLabel(weekStart) {
+  const weekEnd = addDays(weekStart, 6);
+  return `${formatDateKey(weekStart)} to ${formatDateKey(weekEnd)}`;
+}
+
+function buildBranchMetrics(rows, branches) {
+  const branchMetrics = {};
+
+  branches.forEach((branchId) => {
+    const branchRows = rows.filter((row) => row.branchId === branchId);
+
+    if (!branchRows.length) {
+      branchMetrics[branchId] = {
+        branchId,
+        latestDate: null,
+        latestFullWeekKey: null,
+        latestFullWeekStart: null,
+        latestFullWeekLabel: "",
+        corridorWeekTotals: {},
+        corridorWeekTotalsByCorridor: {},
+        weeklyBranchTotals: {},
+        priorWeekKeys: [],
+        corridorSummaries: []
+      };
+      return;
+    }
+
+    const latestDate = branchRows.reduce((maxDate, row) => {
+      return !maxDate || row.date > maxDate ? row.date : maxDate;
+    }, null);
+
+    const currentWeekStart = getStartOfWeek(latestDate);
+    const latestFullWeekStart = addWeeks(currentWeekStart, -1);
+    const latestFullWeekKey = formatDateKey(latestFullWeekStart);
+
+    const corridorWeekTotals = {};
+    const weeklyBranchTotals = {};
+    const corridorSet = new Set();
+
+    branchRows.forEach((row) => {
+      const weekKey = getWeekKey(row.date);
+
+      if (!corridorWeekTotals[weekKey]) {
+        corridorWeekTotals[weekKey] = {};
+      }
+
+      if (!corridorWeekTotals[weekKey][row.corridor]) {
+        corridorWeekTotals[weekKey][row.corridor] = 0;
+      }
+
+      corridorWeekTotals[weekKey][row.corridor] += row.transactionCount;
+
+      if (!weeklyBranchTotals[weekKey]) {
+        weeklyBranchTotals[weekKey] = 0;
+      }
+
+      weeklyBranchTotals[weekKey] += row.transactionCount;
+      corridorSet.add(row.corridor);
+    });
+
+    const priorWeekKeys = [1, 2, 3, 4].map((offset) =>
+      formatDateKey(addWeeks(latestFullWeekStart, -offset))
+    );
+
+    const corridorSummaries = Array.from(corridorSet).map((corridor) => {
+      const latestWeekTx = getNestedNumber(corridorWeekTotals, latestFullWeekKey, corridor);
+      const prior4WeekValues = priorWeekKeys.map((weekKey) =>
+        getNestedNumber(corridorWeekTotals, weekKey, corridor)
+      );
+      const prior4WeekTotal = prior4WeekValues.reduce((sum, value) => sum + value, 0);
+      const prior4WeekAvg = prior4WeekTotal / 4;
+      const deltaVsAvg = latestWeekTx - prior4WeekAvg;
+      const pctVsAvg = prior4WeekAvg > 0 ? (deltaVsAvg / prior4WeekAvg) * 100 : null;
+      const latestWeekBranchTotal = weeklyBranchTotals[latestFullWeekKey] || 0;
+      const shareOfLatestWeek =
+        latestWeekBranchTotal > 0 ? latestWeekTx / latestWeekBranchTotal : 0;
+
+      return {
+        corridor,
+        latestWeekTx,
+        prior4WeekAvg,
+        prior4WeekTotal,
+        deltaVsAvg,
+        pctVsAvg,
+        shareOfLatestWeek,
+        prior4WeekValues
+      };
+    });
+
+    corridorSummaries.sort((a, b) => b.latestWeekTx - a.latestWeekTx);
+
+    const corridorWeekTotalsByCorridor = {};
+    corridorSummaries.forEach((summary) => {
+      corridorWeekTotalsByCorridor[summary.corridor] = {};
+      Object.keys(corridorWeekTotals).forEach((weekKey) => {
+        corridorWeekTotalsByCorridor[summary.corridor][weekKey] =
+          getNestedNumber(corridorWeekTotals, weekKey, summary.corridor);
+      });
+    });
+
+    branchMetrics[branchId] = {
+      branchId,
+      latestDate,
+      latestFullWeekKey,
+      latestFullWeekStart,
+      latestFullWeekLabel: formatWeekLabel(latestFullWeekStart),
+      corridorWeekTotals,
+      corridorWeekTotalsByCorridor,
+      weeklyBranchTotals,
+      priorWeekKeys,
+      corridorSummaries
+    };
+  });
+
+  return branchMetrics;
+}
+
+function getNestedNumber(map, firstKey, secondKey) {
+  if (!map[firstKey] || !map[firstKey][secondKey]) {
+    return 0;
+  }
+
+  return map[firstKey][secondKey];
+}
+
 function setStatus(message, isError = false) {
   csvStatus.textContent = message;
   csvStatus.style.color = isError ? "#b42318" : "";
@@ -230,7 +378,20 @@ function renderUnknownRoute() {
 
 function renderBdePlaceholder() {
   const branchListHtml = appState.branches
-    .map((branchId) => `<li>${escapeHtml(branchId)}</li>`)
+    .map((branchId) => {
+      const metrics = appState.branchMetrics[branchId];
+      const topCorridor = metrics && metrics.corridorSummaries[0]
+        ? metrics.corridorSummaries[0].corridor
+        : "N/A";
+
+      return `
+        <li>
+          <strong>${escapeHtml(branchId)}</strong>
+          <span>Latest full week: ${escapeHtml(metrics.latestFullWeekLabel || "N/A")}</span>
+          <span>Top corridor in latest full week: ${escapeHtml(topCorridor)}</span>
+        </li>
+      `;
+    })
     .join("");
 
   app.innerHTML = `
@@ -242,22 +403,27 @@ function renderBdePlaceholder() {
       <ul class="branch-list">
         ${branchListHtml}
       </ul>
-      <p>This is the placeholder for the BDE dropdown and recommendation card.</p>
+      <p>This now has the weekly aggregation layer. Next we will turn it into a real recommendation card and selector.</p>
     </div>
   `;
 }
 
 function renderAgencyPlaceholder() {
-  const matchingRows = appState.rows.filter(
-    (row) => row.branchId === appState.route.branchId
-  );
+  const branchId = appState.route.branchId;
+  const matchingRows = appState.rows.filter((row) => row.branchId === branchId);
+  const metrics = appState.branchMetrics[branchId];
+  const topCorridor = metrics && metrics.corridorSummaries[0]
+    ? metrics.corridorSummaries[0].corridor
+    : "N/A";
 
   app.innerHTML = `
     <div class="portal-placeholder">
       <h2>Agency Portal</h2>
-      <p>Branch ID from URL: <strong>${escapeHtml(appState.route.branchId || "")}</strong></p>
+      <p>Branch ID from URL: <strong>${escapeHtml(branchId || "")}</strong></p>
       <p>Matching normalized rows: <strong>${matchingRows.length}</strong></p>
-      <p>This is the placeholder for the agency recommendation card.</p>
+      <p>Latest full week: <strong>${escapeHtml(metrics ? metrics.latestFullWeekLabel : "N/A")}</strong></p>
+      <p>Current top corridor in that week: <strong>${escapeHtml(topCorridor)}</strong></p>
+      <p>Next we will convert this into the real recommendation card.</p>
     </div>
   `;
 }
@@ -315,11 +481,13 @@ function handleLoadCsv() {
 
     const normalized = normalizeRows(parsed.rows);
     const branches = extractBranches(normalized.normalizedRows);
+    const branchMetrics = buildBranchMetrics(normalized.normalizedRows, branches);
 
     appState.rawCsv = rawCsv;
     appState.headers = parsed.headers;
     appState.rows = normalized.normalizedRows;
     appState.branches = branches;
+    appState.branchMetrics = branchMetrics;
 
     const invalidRowNote = normalized.invalidRows.length
       ? ` Skipped ${normalized.invalidRows.length} invalid row(s).`
