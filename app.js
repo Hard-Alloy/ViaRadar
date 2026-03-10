@@ -1,5 +1,3 @@
-const csvInput = document.getElementById("csvInput");
-const loadCsvBtn = document.getElementById("loadCsvBtn");
 const csvStatus = document.getElementById("csvStatus");
 const app = document.getElementById("app");
 
@@ -422,7 +420,7 @@ function renderBdePlaceholder() {
     <div class="portal-placeholder">
       <h2>BDE Portal</h2>
       <p>Route mode: <strong>${escapeHtml(appState.route.source)}</strong></p>
-      <p>CSV loaded successfully.</p>
+      <p>Data loaded successfully.</p>
       <p>Normalized rows: <strong>${appState.rows.length}</strong></p>
       <p>Agencies found: <strong>${appState.branches.length}</strong></p>
       <ul class="branch-list">
@@ -460,7 +458,7 @@ function renderInitialState() {
       <div class="portal-placeholder">
         <h2>BDE Portal</h2>
         <p>Open with <code>/?view=bde</code> for the static-safe MVP route.</p>
-        <p>Paste a CSV and click Load CSV.</p>
+        <p>Loading agency data from the repo...</p>
       </div>
     `;
     return;
@@ -472,7 +470,7 @@ function renderInitialState() {
         <h2>Agency Portal</h2>
         <p>Open with <code>/?view=agency&amp;branchId=${escapeHtml(appState.route.branchId || "A07667")}</code> for the static-safe MVP route.</p>
         <p>Branch ID: <strong>${escapeHtml(appState.route.branchId || "")}</strong></p>
-        <p>Paste a CSV and click Load CSV.</p>
+        <p>Loading agency data from the repo...</p>
       </div>
     `;
     return;
@@ -495,41 +493,44 @@ function renderApp() {
   renderUnknownRoute();
 }
 
-function handleLoadCsv() {
-  const rawCsv = csvInput.value.trim();
+async function loadCsvFromRepo() {
+  setStatus("Loading data.csv...");
 
-  if (!rawCsv) {
-    setStatus("Paste CSV data first.", true);
-    return;
+  const response = await fetch("./data.csv", { cache: "no-store" });
+
+  if (!response.ok) {
+    throw new Error(`Could not load data.csv (${response.status}).`);
   }
 
-  try {
-    const parsed = parseCsv(rawCsv);
-    validateHeaders(parsed.headers);
+  const rawCsv = await response.text();
 
-    const normalized = normalizeRows(parsed.rows);
-    const branches = extractBranches(normalized.normalizedRows);
-    const branchMetrics = buildBranchMetrics(normalized.normalizedRows, branches);
-
-    appState.rawCsv = rawCsv;
-    appState.headers = parsed.headers;
-    appState.rows = normalized.normalizedRows;
-    appState.branches = branches;
-    appState.branchMetrics = branchMetrics;
-    appState.route = getRouteContext();
-
-    const invalidRowNote = normalized.invalidRows.length
-      ? ` Skipped ${normalized.invalidRows.length} invalid row(s).`
-      : "";
-
-    setStatus(
-      `Loaded ${normalized.normalizedRows.length} normalized rows across ${branches.length} agencies.${invalidRowNote}`
-    );
-
-    renderApp();
-  } catch (error) {
-    setStatus(error.message || "Failed to load CSV.", true);
+  if (!rawCsv.trim()) {
+    throw new Error("data.csv is empty.");
   }
+
+  const parsed = parseCsv(rawCsv);
+  validateHeaders(parsed.headers);
+
+  const normalized = normalizeRows(parsed.rows);
+  const branches = extractBranches(normalized.normalizedRows);
+  const branchMetrics = buildBranchMetrics(normalized.normalizedRows, branches);
+
+  appState.rawCsv = rawCsv;
+  appState.headers = parsed.headers;
+  appState.rows = normalized.normalizedRows;
+  appState.branches = branches;
+  appState.branchMetrics = branchMetrics;
+  appState.route = getRouteContext();
+
+  const invalidRowNote = normalized.invalidRows.length
+    ? ` Skipped ${normalized.invalidRows.length} invalid row(s).`
+    : "";
+
+  setStatus(
+    `Loaded ${normalized.normalizedRows.length} normalized rows across ${branches.length} agencies.${invalidRowNote}`
+  );
+
+  renderApp();
 }
 
 function escapeHtml(value) {
@@ -541,6 +542,22 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-loadCsvBtn.addEventListener("click", handleLoadCsv);
+async function initApp() {
+  renderInitialState();
 
-renderInitialState();
+  try {
+    await loadCsvFromRepo();
+  } catch (error) {
+    setStatus(error.message || "Failed to load data.", true);
+
+    app.innerHTML = `
+      <div class="portal-placeholder">
+        <h2>Data load error</h2>
+        <p>${escapeHtml(error.message || "Failed to load data.")}</p>
+        <p>Check that <code>data.csv</code> exists in the repo root and has the required headers.</p>
+      </div>
+    `;
+  }
+}
+
+initApp();
