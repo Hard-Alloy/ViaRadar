@@ -14,6 +14,7 @@ let appState = {
   rawCsv: "",
   rows: [],
   headers: [],
+  branches: [],
   route: getRouteContext()
 };
 
@@ -36,7 +37,7 @@ function getRouteContext() {
   ) {
     return {
       mode: "agency",
-      branchId: decodeURIComponent(segments[1]),
+      branchId: decodeURIComponent(segments[1]).trim(),
       path
     };
   }
@@ -50,6 +51,10 @@ function getRouteContext() {
 
 function normalizeHeader(header) {
   return String(header || "").trim();
+}
+
+function normalizeValue(value) {
+  return String(value == null ? "" : value).trim();
 }
 
 function splitCsvLine(line) {
@@ -102,7 +107,7 @@ function parseCsv(csvText) {
     const row = {};
 
     headers.forEach((header, index) => {
-      row[header] = values[index] !== undefined ? values[index] : "";
+      row[header] = values[index] !== undefined ? normalizeValue(values[index]) : "";
     });
 
     return row;
@@ -123,6 +128,90 @@ function validateHeaders(headers) {
   }
 }
 
+function parseDateValue(value) {
+  const raw = normalizeValue(value);
+
+  if (!raw) {
+    return null;
+  }
+
+  const parsed = new Date(raw);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+}
+
+function formatDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeCorridor(value) {
+  return normalizeValue(value);
+}
+
+function normalizeBranchId(value) {
+  return normalizeValue(value);
+}
+
+function normalizeTransactionCount(value) {
+  const raw = normalizeValue(value);
+
+  if (!raw) {
+    return 1;
+  }
+
+  const numeric = Number(raw.replace(/,/g, ""));
+
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return 1;
+  }
+
+  return numeric;
+}
+
+function normalizeRows(rows) {
+  const normalizedRows = [];
+  const invalidRows = [];
+
+  rows.forEach((row, index) => {
+    const branchId = normalizeBranchId(row["Id Branch"]);
+    const corridor = normalizeCorridor(row["Corridor"]);
+    const date = parseDateValue(row["Date Txs"]);
+    const transactionCount = normalizeTransactionCount(row["Transaction Id"]);
+
+    if (!branchId || !corridor || !date) {
+      invalidRows.push(index + 2);
+      return;
+    }
+
+    normalizedRows.push({
+      branchId,
+      date,
+      dateKey: formatDateKey(date),
+      corridor,
+      transactionCount,
+      raw: row
+    });
+  });
+
+  return {
+    normalizedRows,
+    invalidRows
+  };
+}
+
+function extractBranches(rows) {
+  return Array.from(
+    new Set(rows.map((row) => row.branchId).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b));
+}
+
 function setStatus(message, isError = false) {
   csvStatus.textContent = message;
   csvStatus.style.color = isError ? "#b42318" : "";
@@ -134,27 +223,40 @@ function renderUnknownRoute() {
       <h2>Route not recognized</h2>
       <p>Use <code>/bde</code> or <code>/agency/[branchId]</code>.</p>
       <p>Current path: <strong>${escapeHtml(appState.route.path)}</strong></p>
+      <p>Static fallback option later: <code>/?view=bde</code> or <code>/?view=agency&amp;branchId=A07667</code></p>
     </div>
   `;
 }
 
 function renderBdePlaceholder() {
+  const branchListHtml = appState.branches
+    .map((branchId) => `<li>${escapeHtml(branchId)}</li>`)
+    .join("");
+
   app.innerHTML = `
     <div class="portal-placeholder">
       <h2>BDE Portal</h2>
       <p>CSV loaded successfully.</p>
-      <p>Rows loaded: <strong>${appState.rows.length}</strong></p>
-      <p>This is the placeholder for the BDE agency selector and recommendation card.</p>
+      <p>Normalized rows: <strong>${appState.rows.length}</strong></p>
+      <p>Agencies found: <strong>${appState.branches.length}</strong></p>
+      <ul class="branch-list">
+        ${branchListHtml}
+      </ul>
+      <p>This is the placeholder for the BDE dropdown and recommendation card.</p>
     </div>
   `;
 }
 
 function renderAgencyPlaceholder() {
+  const matchingRows = appState.rows.filter(
+    (row) => row.branchId === appState.route.branchId
+  );
+
   app.innerHTML = `
     <div class="portal-placeholder">
       <h2>Agency Portal</h2>
       <p>Branch ID from URL: <strong>${escapeHtml(appState.route.branchId || "")}</strong></p>
-      <p>Rows loaded: <strong>${appState.rows.length}</strong></p>
+      <p>Matching normalized rows: <strong>${matchingRows.length}</strong></p>
       <p>This is the placeholder for the agency recommendation card.</p>
     </div>
   `;
@@ -211,11 +313,22 @@ function handleLoadCsv() {
     const parsed = parseCsv(rawCsv);
     validateHeaders(parsed.headers);
 
+    const normalized = normalizeRows(parsed.rows);
+    const branches = extractBranches(normalized.normalizedRows);
+
     appState.rawCsv = rawCsv;
     appState.headers = parsed.headers;
-    appState.rows = parsed.rows;
+    appState.rows = normalized.normalizedRows;
+    appState.branches = branches;
 
-    setStatus(`Loaded ${parsed.rows.length} rows successfully.`);
+    const invalidRowNote = normalized.invalidRows.length
+      ? ` Skipped ${normalized.invalidRows.length} invalid row(s).`
+      : "";
+
+    setStatus(
+      `Loaded ${normalized.normalizedRows.length} normalized rows across ${branches.length} agencies.${invalidRowNote}`
+    );
+
     renderApp();
   } catch (error) {
     setStatus(error.message || "Failed to load CSV.", true);
