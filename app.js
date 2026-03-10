@@ -1,4 +1,3 @@
-const csvStatus = document.getElementById("csvStatus");
 const app = document.getElementById("app");
 
 const REQUIRED_HEADERS = [
@@ -8,13 +7,21 @@ const REQUIRED_HEADERS = [
   "Transaction Id"
 ];
 
+const ACTION_LIBRARY = {
+  PUSH: "Push",
+  DEFEND: "Defend",
+  DIVERSIFY: "Diversify beyond",
+  HOLD: "Hold focus on"
+};
+
 let appState = {
   rawCsv: "",
   rows: [],
   headers: [],
   branches: [],
   branchMetrics: {},
-  route: getRouteContext()
+  route: getRouteContext(),
+  selectedBranchId: null
 };
 
 function getRouteContext() {
@@ -145,9 +152,7 @@ function validateHeaders(headers) {
   );
 
   if (missingHeaders.length) {
-    throw new Error(
-      `Missing required header(s): ${missingHeaders.join(", ")}`
-    );
+    throw new Error(`Missing required header(s): ${missingHeaders.join(", ")}`);
   }
 }
 
@@ -230,9 +235,9 @@ function normalizeRows(rows) {
 }
 
 function extractBranches(rows) {
-  return Array.from(
-    new Set(rows.map((row) => row.branchId).filter(Boolean))
-  ).sort((a, b) => a.localeCompare(b));
+  return Array.from(new Set(rows.map((row) => row.branchId).filter(Boolean))).sort((a, b) =>
+    a.localeCompare(b)
+  );
 }
 
 function getStartOfWeek(date) {
@@ -262,6 +267,14 @@ function formatWeekLabel(weekStart) {
   return `${formatDateKey(weekStart)} to ${formatDateKey(weekEnd)}`;
 }
 
+function getNestedNumber(map, firstKey, secondKey) {
+  if (!map[firstKey] || !map[firstKey][secondKey]) {
+    return 0;
+  }
+
+  return map[firstKey][secondKey];
+}
+
 function buildBranchMetrics(rows, branches) {
   const branchMetrics = {};
 
@@ -279,7 +292,8 @@ function buildBranchMetrics(rows, branches) {
         corridorWeekTotalsByCorridor: {},
         weeklyBranchTotals: {},
         priorWeekKeys: [],
-        corridorSummaries: []
+        corridorSummaries: [],
+        recommendations: []
       };
       return;
     }
@@ -346,7 +360,12 @@ function buildBranchMetrics(rows, branches) {
       };
     });
 
-    corridorSummaries.sort((a, b) => b.latestWeekTx - a.latestWeekTx);
+    corridorSummaries.sort((a, b) => {
+      if (b.latestWeekTx !== a.latestWeekTx) {
+        return b.latestWeekTx - a.latestWeekTx;
+      }
+      return b.shareOfLatestWeek - a.shareOfLatestWeek;
+    });
 
     const corridorWeekTotalsByCorridor = {};
     corridorSummaries.forEach((summary) => {
@@ -356,6 +375,8 @@ function buildBranchMetrics(rows, branches) {
           getNestedNumber(corridorWeekTotals, weekKey, summary.corridor);
       });
     });
+
+    const recommendations = buildRecommendations(corridorSummaries);
 
     branchMetrics[branchId] = {
       branchId,
@@ -367,89 +388,390 @@ function buildBranchMetrics(rows, branches) {
       corridorWeekTotalsByCorridor,
       weeklyBranchTotals,
       priorWeekKeys,
-      corridorSummaries
+      corridorSummaries,
+      recommendations
     };
   });
 
   return branchMetrics;
 }
 
-function getNestedNumber(map, firstKey, secondKey) {
-  if (!map[firstKey] || !map[firstKey][secondKey]) {
-    return 0;
+function buildRecommendations(corridorSummaries) {
+  if (!corridorSummaries.length) {
+    return [];
   }
 
-  return map[firstKey][secondKey];
+  const sortedByLatest = [...corridorSummaries].sort((a, b) => b.latestWeekTx - a.latestWeekTx);
+  const topCorridor = sortedByLatest[0];
+  const secondCorridor = sortedByLatest[1] || null;
+
+  const ranked = corridorSummaries.map((summary) => {
+    let action = ACTION_LIBRARY.HOLD;
+    let score = 0;
+    let why = "";
+    let subject = summary.corridor;
+
+    const pctVsAvg = summary.pctVsAvg;
+    const sharePct = summary.shareOfLatestWeek * 100;
+    const latestRounded = Math.round(summary.latestWeekTx);
+    const avgRounded = Math.round(summary.prior4WeekAvg);
+
+    if (pctVsAvg !== null && pctVsAvg >= 15) {
+      action = ACTION_LIBRARY.PUSH;
+      score = 400 + pctVsAvg + sharePct;
+      why = `${summary.corridor} is running above trend. Latest week delivered ${formatWholeNumber(latestRounded)} transactions versus a prior 4-week average of ${formatWholeNumber(avgRounded)}.`;
+    } else if (pctVsAvg !== null && pctVsAvg <= -15 && sharePct >= 35) {
+      action = ACTION_LIBRARY.DEFEND;
+      score = 300 + Math.abs(pctVsAvg) + sharePct;
+      why = `${summary.corridor} is a core corridor but softened versus trend. Latest week delivered ${formatWholeNumber(latestRounded)} transactions versus a prior 4-week average of ${formatWholeNumber(avgRounded)}.`;
+    } else if (
+      topCorridor &&
+      topCorridor.corridor === summary.corridor &&
+      topCorridor.shareOfLatestWeek >= 0.6 &&
+      secondCorridor
+    ) {
+      action = ACTION_LIBRARY.DIVERSIFY;
+      subject = topCorridor.corridor;
+      score = 200 + topCorridor.shareOfLatestWeek * 100 + (secondCorridor.latestWeekTx || 0) / 10;
+      why = `${topCorridor.corridor} drives ${formatPercent(topCorridor.shareOfLatestWeek * 100, 0)} of latest-week volume. The agency is overly concentrated in one corridor.`;
+    } else {
+      action = ACTION_LIBRARY.HOLD;
+      score = 100 + sharePct + (pctVsAvg || 0);
+      why = `${summary.corridor} is relatively stable. Latest week delivered ${formatWholeNumber(latestRounded)} transactions versus a prior 4-week average of ${formatWholeNumber(avgRounded)}.`;
+    }
+
+    return {
+      corridor: summary.corridor,
+      action,
+      subject,
+      why,
+      score,
+      latestWeekTx: summary.latestWeekTx,
+      prior4WeekAvg: summary.prior4WeekAvg,
+      deltaVsAvg: summary.deltaVsAvg,
+      pctVsAvg: summary.pctVsAvg,
+      shareOfLatestWeek: summary.shareOfLatestWeek
+    };
+  });
+
+  const deduped = [];
+  const seenKeys = new Set();
+
+  ranked
+    .sort((a, b) => b.score - a.score)
+    .forEach((item) => {
+      const key = `${item.action}|${item.subject}`;
+      if (seenKeys.has(key)) {
+        return;
+      }
+      seenKeys.add(key);
+      deduped.push(item);
+    });
+
+  if (deduped.length < 3) {
+    sortedByLatest.forEach((summary) => {
+      const fallback = {
+        corridor: summary.corridor,
+        action: ACTION_LIBRARY.HOLD,
+        subject: summary.corridor,
+        why: `${summary.corridor} remains an active corridor with ${formatWholeNumber(Math.round(summary.latestWeekTx))} latest-week transactions.`,
+        score: 10 + summary.latestWeekTx,
+        latestWeekTx: summary.latestWeekTx,
+        prior4WeekAvg: summary.prior4WeekAvg,
+        deltaVsAvg: summary.deltaVsAvg,
+        pctVsAvg: summary.pctVsAvg,
+        shareOfLatestWeek: summary.shareOfLatestWeek
+      };
+      const key = `${fallback.action}|${fallback.subject}`;
+      if (!seenKeys.has(key)) {
+        seenKeys.add(key);
+        deduped.push(fallback);
+      }
+    });
+  }
+
+  return deduped.slice(0, 3);
 }
 
-function setStatus(message, isError = false) {
-  csvStatus.textContent = message;
-  csvStatus.style.color = isError ? "#b42318" : "";
+function formatWholeNumber(value) {
+  return Number(value || 0).toLocaleString("en-US", {
+    maximumFractionDigits: 0
+  });
+}
+
+function formatPercent(value, digits = 0) {
+  if (!Number.isFinite(value)) {
+    return "N/A";
+  }
+
+  return `${value.toFixed(digits)}%`;
+}
+
+function formatSignedPercent(value, digits = 0) {
+  if (!Number.isFinite(value)) {
+    return "N/A";
+  }
+
+  const rounded = value.toFixed(digits);
+  return `${value > 0 ? "+" : ""}${rounded}%`;
+}
+
+function formatSignedWhole(value) {
+  const numeric = Number(value || 0);
+  const sign = numeric > 0 ? "+" : "";
+  return `${sign}${formatWholeNumber(Math.round(numeric))}`;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function renderUnknownRoute() {
   app.innerHTML = `
     <div class="portal-placeholder">
       <h2>Route not recognized</h2>
-      <p>Use static-safe URLs like <code>/?view=bde</code> or <code>/?view=agency&amp;branchId=A07667</code>.</p>
-      <p>Path route support is also kept for later: <code>/bde</code> and <code>/agency/[branchId]</code>.</p>
+      <p>Use <code>/?view=bde</code> or <code>/?view=agency&amp;branchId=A07667</code>.</p>
+      <p>Path routes also work: <code>/bde</code> and <code>/agency/[branchId]</code>.</p>
       <p>Current path: <strong>${escapeHtml(appState.route.path)}</strong></p>
     </div>
   `;
 }
 
-function renderBdePlaceholder() {
-  const branchListHtml = appState.branches
-    .map((branchId) => {
-      const metrics = appState.branchMetrics[branchId];
-      const topCorridor = metrics && metrics.corridorSummaries[0]
-        ? metrics.corridorSummaries[0].corridor
-        : "N/A";
+function getSelectedBranchId() {
+  if (appState.route.mode === "agency") {
+    return appState.route.branchId;
+  }
 
-      return `
-        <li>
-          <strong>${escapeHtml(branchId)}</strong>
-          <span>Latest full week: ${escapeHtml(metrics.latestFullWeekLabel || "N/A")}</span>
-          <span>Top corridor in latest full week: ${escapeHtml(topCorridor)}</span>
-        </li>
-      `;
-    })
-    .join("");
+  if (appState.route.mode === "bde") {
+    if (appState.selectedBranchId && appState.branches.includes(appState.selectedBranchId)) {
+      return appState.selectedBranchId;
+    }
+    return appState.branches[0] || null;
+  }
 
-  app.innerHTML = `
-    <div class="portal-placeholder">
-      <h2>BDE Portal</h2>
-      <p>Route mode: <strong>${escapeHtml(appState.route.source)}</strong></p>
-      <p>Data loaded successfully.</p>
-      <p>Normalized rows: <strong>${appState.rows.length}</strong></p>
-      <p>Agencies found: <strong>${appState.branches.length}</strong></p>
-      <ul class="branch-list">
-        ${branchListHtml}
-      </ul>
-      <p>This now has the weekly aggregation layer. Next we will turn it into a real recommendation card and selector.</p>
+  return null;
+}
+
+function buildMiniChart(branchMetrics, corridor) {
+  if (!branchMetrics || !corridor || !branchMetrics.latestFullWeekStart) {
+    return "";
+  }
+
+  const weekStarts = [4, 3, 2, 1, 0].map((offset) =>
+    addWeeks(branchMetrics.latestFullWeekStart, -offset)
+  );
+
+  const chartRows = weekStarts.map((weekStart) => {
+    const weekKey = formatDateKey(weekStart);
+    const value = getNestedNumber(
+      branchMetrics.corridorWeekTotals,
+      weekKey,
+      corridor
+    );
+    return {
+      label: weekKey.slice(5),
+      value
+    };
+  });
+
+  const maxValue = Math.max(...chartRows.map((item) => item.value), 1);
+
+  return `
+    <div class="mini-chart">
+      ${chartRows
+        .map((item) => {
+          const height = Math.max((item.value / maxValue) * 100, item.value > 0 ? 8 : 2);
+          return `
+            <div class="mini-chart-col">
+              <div class="mini-chart-bar-wrap">
+                <div class="mini-chart-bar" style="height:${height}%"></div>
+              </div>
+              <div class="mini-chart-value">${formatWholeNumber(item.value)}</div>
+              <div class="mini-chart-label">${escapeHtml(item.label)}</div>
+            </div>
+          `;
+        })
+        .join("")}
     </div>
   `;
 }
 
-function renderAgencyPlaceholder() {
-  const branchId = appState.route.branchId;
-  const matchingRows = appState.rows.filter((row) => row.branchId === branchId);
-  const metrics = appState.branchMetrics[branchId];
-  const topCorridor = metrics && metrics.corridorSummaries[0]
-    ? metrics.corridorSummaries[0].corridor
-    : "N/A";
+function buildRecommendationCard(branchId, showSelector) {
+  const branchMetrics = appState.branchMetrics[branchId];
 
-  app.innerHTML = `
-    <div class="portal-placeholder">
-      <h2>Agency Portal</h2>
-      <p>Route mode: <strong>${escapeHtml(appState.route.source)}</strong></p>
-      <p>Branch ID: <strong>${escapeHtml(branchId || "")}</strong></p>
-      <p>Matching normalized rows: <strong>${matchingRows.length}</strong></p>
-      <p>Latest full week: <strong>${escapeHtml(metrics ? metrics.latestFullWeekLabel : "N/A")}</strong></p>
-      <p>Current top corridor in that week: <strong>${escapeHtml(topCorridor)}</strong></p>
-      <p>Next we will convert this into the real recommendation card.</p>
+  if (!branchMetrics) {
+    return `
+      <div class="portal-placeholder">
+        <h2>Agency not found</h2>
+        <p>No data was found for branch <strong>${escapeHtml(branchId || "")}</strong>.</p>
+      </div>
+    `;
+  }
+
+  const recommendations = branchMetrics.recommendations || [];
+  const mainRec = recommendations[0];
+  const secondRec = recommendations[1];
+  const thirdRec = recommendations[2];
+
+  if (!mainRec) {
+    return `
+      <div class="portal-placeholder">
+        <h2>No recommendation available</h2>
+        <p>There is not enough complete weekly data yet for <strong>${escapeHtml(branchId)}</strong>.</p>
+      </div>
+    `;
+  }
+
+  const selectorHtml = showSelector
+    ? `
+      <div class="portal-toolbar">
+        <label class="field-label" for="branchSelect">Agency</label>
+        <select id="branchSelect" class="branch-select">
+          ${appState.branches
+            .map(
+              (id) => `
+                <option value="${escapeHtml(id)}" ${id === branchId ? "selected" : ""}>
+                  ${escapeHtml(id)}
+                </option>
+              `
+            )
+            .join("")}
+        </select>
+      </div>
+    `
+    : "";
+
+  const mainActionText =
+    mainRec.action === ACTION_LIBRARY.DIVERSIFY
+      ? `${mainRec.action} ${mainRec.subject}`
+      : `${mainRec.action} ${mainRec.subject}`;
+
+  return `
+    <div class="portal-view">
+      <div class="portal-head">
+        <div>
+          <div class="view-kicker">${showSelector ? "BDE Portal" : "Agency Portal"}</div>
+          <h2 class="view-title">Branch ${escapeHtml(branchId)}</h2>
+          <p class="view-subtitle">Latest full week: ${escapeHtml(branchMetrics.latestFullWeekLabel)}</p>
+        </div>
+        ${selectorHtml}
+      </div>
+
+      <section class="recommendation-hero">
+        <div class="recommendation-hero-main">
+          <div class="hero-label">Main Action</div>
+          <div class="hero-action">${escapeHtml(mainActionText)}</div>
+          <div class="hero-why-label">Why</div>
+          <p class="hero-why">${escapeHtml(mainRec.why)}</p>
+
+          <div class="metric-grid">
+            <div class="metric-card">
+              <div class="metric-label">Latest week</div>
+              <div class="metric-value">${formatWholeNumber(Math.round(mainRec.latestWeekTx))}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Prior 4-week avg</div>
+              <div class="metric-value">${formatWholeNumber(Math.round(mainRec.prior4WeekAvg))}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Vs avg</div>
+              <div class="metric-value">${formatSignedPercent(mainRec.pctVsAvg || 0, 0)}</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Share of week</div>
+              <div class="metric-value">${formatPercent(mainRec.shareOfLatestWeek * 100, 0)}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="recommendation-hero-chart">
+          <div class="chart-title">${escapeHtml(mainRec.corridor)} last 5 weeks</div>
+          ${buildMiniChart(branchMetrics, mainRec.corridor)}
+        </div>
+      </section>
+
+      <section class="next-actions">
+        <div class="next-actions-title">Other recommended actions</div>
+        <div class="next-actions-grid">
+          ${renderSecondaryAction(secondRec, 2)}
+          ${renderSecondaryAction(thirdRec, 3)}
+        </div>
+      </section>
     </div>
   `;
+}
+
+function renderSecondaryAction(rec, rank) {
+  if (!rec) {
+    return `
+      <div class="secondary-card">
+        <div class="secondary-rank">#${rank}</div>
+        <div class="secondary-action">No additional action</div>
+      </div>
+    `;
+  }
+
+  const actionText =
+    rec.action === ACTION_LIBRARY.DIVERSIFY
+      ? `${rec.action} ${rec.subject}`
+      : `${rec.action} ${rec.subject}`;
+
+  return `
+    <div class="secondary-card">
+      <div class="secondary-rank">#${rank}</div>
+      <div class="secondary-action">${escapeHtml(actionText)}</div>
+      <p class="secondary-why">${escapeHtml(rec.why)}</p>
+      <div class="secondary-metrics">
+        <span>Latest: ${formatWholeNumber(Math.round(rec.latestWeekTx))}</span>
+        <span>Vs avg: ${formatSignedWhole(rec.deltaVsAvg)}</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderBdeView() {
+  const branchId = getSelectedBranchId();
+
+  if (!branchId) {
+    app.innerHTML = `
+      <div class="portal-placeholder">
+        <h2>No agencies found</h2>
+        <p>The CSV loaded, but no valid branch IDs were found.</p>
+      </div>
+    `;
+    return;
+  }
+
+  app.innerHTML = buildRecommendationCard(branchId, true);
+
+  const branchSelect = document.getElementById("branchSelect");
+  if (branchSelect) {
+    branchSelect.addEventListener("change", (event) => {
+      appState.selectedBranchId = event.target.value;
+      renderApp();
+    });
+  }
+}
+
+function renderAgencyView() {
+  const branchId = getSelectedBranchId();
+
+  if (!branchId) {
+    app.innerHTML = `
+      <div class="portal-placeholder">
+        <h2>Agency not specified</h2>
+        <p>Use <code>/?view=agency&amp;branchId=A07667</code>.</p>
+      </div>
+    `;
+    return;
+  }
+
+  app.innerHTML = buildRecommendationCard(branchId, false);
 }
 
 function renderInitialState() {
@@ -457,7 +779,6 @@ function renderInitialState() {
     app.innerHTML = `
       <div class="portal-placeholder">
         <h2>BDE Portal</h2>
-        <p>Open with <code>/?view=bde</code> for the static-safe MVP route.</p>
         <p>Loading agency data from the repo...</p>
       </div>
     `;
@@ -468,7 +789,6 @@ function renderInitialState() {
     app.innerHTML = `
       <div class="portal-placeholder">
         <h2>Agency Portal</h2>
-        <p>Open with <code>/?view=agency&amp;branchId=${escapeHtml(appState.route.branchId || "A07667")}</code> for the static-safe MVP route.</p>
         <p>Branch ID: <strong>${escapeHtml(appState.route.branchId || "")}</strong></p>
         <p>Loading agency data from the repo...</p>
       </div>
@@ -481,12 +801,12 @@ function renderInitialState() {
 
 function renderApp() {
   if (appState.route.mode === "bde") {
-    renderBdePlaceholder();
+    renderBdeView();
     return;
   }
 
   if (appState.route.mode === "agency") {
-    renderAgencyPlaceholder();
+    renderAgencyView();
     return;
   }
 
@@ -494,8 +814,6 @@ function renderApp() {
 }
 
 async function loadCsvFromRepo() {
-  setStatus("Loading data.csv...");
-
   const response = await fetch("./data.csv", { cache: "no-store" });
 
   if (!response.ok) {
@@ -521,25 +839,9 @@ async function loadCsvFromRepo() {
   appState.branches = branches;
   appState.branchMetrics = branchMetrics;
   appState.route = getRouteContext();
-
-  const invalidRowNote = normalized.invalidRows.length
-    ? ` Skipped ${normalized.invalidRows.length} invalid row(s).`
-    : "";
-
-  setStatus(
-    `Loaded ${normalized.normalizedRows.length} normalized rows across ${branches.length} agencies.${invalidRowNote}`
-  );
+  appState.selectedBranchId = branches[0] || null;
 
   renderApp();
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
 }
 
 async function initApp() {
@@ -548,8 +850,6 @@ async function initApp() {
   try {
     await loadCsvFromRepo();
   } catch (error) {
-    setStatus(error.message || "Failed to load data.", true);
-
     app.innerHTML = `
       <div class="portal-placeholder">
         <h2>Data load error</h2>
