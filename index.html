@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ViaRadar MVP</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <img
+        class="brand-logo"
+        src="./Viamericas_logo_fullcolor_2025.png"
+        alt="Viamericas"
+      />
+      <div class="header-copy">
+        <div class="eyebrow">ViaRadar</div>
+        <h1>Next Best Action for the Agency</h1>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="page-intro">
+      <p class="intro-text">
+        Paste the latest transaction CSV to power the Agency and BDE mock portals.
+      </p>
+      <p class="route-hint">
+        Intended routes:
+        <code>/agency/[branchId]</code>
+        and
+        <code>/bde</code>
+      </p>
+    </section>
+
+    <section class="csv-panel">
+      <label for="csvInput" class="panel-label">Paste CSV</label>
+      <textarea
+        id="csvInput"
+        class="csv-input"
+        placeholder="Paste CSV data here..."
+        spellcheck="false"
+      ></textarea>
+
+      <div class="panel-actions">
+        <button id="loadCsvBtn" class="primary-button" type="button">
+          Load CSV
+        </button>
+      </div>
+
+      <div id="csvStatus" class="csv-status" aria-live="polite"></div>
+    </section>
+
+    <section id="app" class="app-shell">
+      <!-- Agency portal or BDE portal will render here -->
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
