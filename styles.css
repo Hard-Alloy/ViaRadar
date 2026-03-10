@@ -244,3 +244,15 @@ body {
   padding: 2px 8px;
   color: var(--via-blue);
 }
+
+.branch-list {
+  margin: 12px 0 14px 18px;
+  padding: 0;
+  color: var(--text-mid);
+}
+
+.branch-list li {
+  margin: 0 0 6px 0;
+  font-size: 15px;
+  line-height: 1.4;
+}
