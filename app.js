@@ -14,6 +14,8 @@ const ACTION_LIBRARY = {
   HOLD: "Hold focus on"
 };
 
+const VIAMARKETING_BASE_URL = "https://clever-squirrel-a09d6f.netlify.app/";
+
 let appState = {
   rawCsv: "",
   rows: [],
@@ -187,6 +189,10 @@ function normalizeBranchId(value) {
   return normalizeValue(value);
 }
 
+function normalizeAgencyName(value) {
+  return normalizeValue(value);
+}
+
 function normalizeTransactionCount(value) {
   const raw = normalizeValue(value);
 
@@ -209,6 +215,7 @@ function normalizeRows(rows) {
 
   rows.forEach((row, index) => {
     const branchId = normalizeBranchId(row["Id Branch"]);
+    const agencyName = normalizeAgencyName(row["Agency Name"]) || branchId;
     const corridor = normalizeCorridor(row["Corridor"]);
     const date = parseDateValue(row["Date Txs"]);
     const transactionCount = normalizeTransactionCount(row["Transaction Id"]);
@@ -220,6 +227,7 @@ function normalizeRows(rows) {
 
     normalizedRows.push({
       branchId,
+      agencyName,
       date,
       dateKey: formatDateKey(date),
       corridor,
@@ -238,6 +246,18 @@ function extractBranches(rows) {
   return Array.from(new Set(rows.map((row) => row.branchId).filter(Boolean))).sort((a, b) =>
     a.localeCompare(b)
   );
+}
+
+function getAgencyNameForBranch(rows, branchId) {
+  const match = rows.find((row) => row.branchId === branchId && normalizeValue(row.agencyName));
+  return match ? match.agencyName : branchId;
+}
+
+function buildViaMarketingUrl(branchId, agencyName) {
+  const url = new URL(VIAMARKETING_BASE_URL);
+  url.searchParams.set("agency_id", branchId);
+  url.searchParams.set("agency_name", agencyName);
+  return url.toString();
 }
 
 function getStartOfWeek(date) {
@@ -284,6 +304,7 @@ function buildBranchMetrics(rows, branches) {
     if (!branchRows.length) {
       branchMetrics[branchId] = {
         branchId,
+        agencyName: branchId,
         latestDate: null,
         latestFullWeekKey: null,
         latestFullWeekStart: null,
@@ -380,6 +401,7 @@ function buildBranchMetrics(rows, branches) {
 
     branchMetrics[branchId] = {
       branchId,
+      agencyName: getAgencyNameForBranch(branchRows, branchId),
       latestDate,
       latestFullWeekKey,
       latestFullWeekStart,
@@ -601,6 +623,33 @@ function buildMiniChart(branchMetrics, corridor) {
   `;
 }
 
+function buildCollateralCta(branchMetrics) {
+  if (!branchMetrics) {
+    return "";
+  }
+
+  const viaMarketingUrl = buildViaMarketingUrl(
+    branchMetrics.branchId,
+    branchMetrics.agencyName || branchMetrics.branchId
+  );
+
+  return `
+    <section class="collateral-cta">
+      <p class="collateral-cta-copy">
+        Click here to access your customized collateral in ViaMarketing.
+      </p>
+      <a
+        class="collateral-cta-link"
+        href="${escapeHtml(viaMarketingUrl)}"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        Get the Collateral
+      </a>
+    </section>
+  `;
+}
+
 function buildRecommendationCard(branchId, showSelector) {
   const branchMetrics = appState.branchMetrics[branchId];
 
@@ -633,13 +682,11 @@ function buildRecommendationCard(branchId, showSelector) {
         <label class="field-label" for="branchSelect">Agency</label>
         <select id="branchSelect" class="branch-select">
           ${appState.branches
-            .map(
-              (id) => `
-                <option value="${escapeHtml(id)}" ${id === branchId ? "selected" : ""}>
-                  ${escapeHtml(id)}
-                </option>
-              `
-            )
+            .map((id) => `
+              <option value="${escapeHtml(id)}" ${id === branchId ? "selected" : ""}>
+                ${escapeHtml(id)}
+              </option>
+            `)
             .join("")}
         </select>
       </div>
@@ -694,6 +741,8 @@ function buildRecommendationCard(branchId, showSelector) {
           ${buildMiniChart(branchMetrics, mainRec.corridor)}
         </div>
       </section>
+
+      ${buildCollateralCta(branchMetrics)}
 
       <section class="next-actions">
         <div class="next-actions-title">Other recommended actions</div>
